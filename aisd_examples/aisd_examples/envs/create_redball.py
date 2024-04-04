@@ -16,9 +16,8 @@ class CreateRedBallEnv(gym.Env):
         self.observation_space = spaces.Discrete(10)
         self.action_space = spaces.Discrete(5)
         self.reset()
-        
-        self.redball = RedBall()
         rclpy.init()
+        self.redball = RedBall()
 
     def reset(self, seed=None, options=None):
         return self.observation_space.sample(), {}
