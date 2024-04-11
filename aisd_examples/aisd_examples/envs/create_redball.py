@@ -7,42 +7,63 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge
+from irobot_create_msgs.msg import StopStatus
 import cv2
 
 
 class CreateRedBallEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 4}
     def __init__(self, render_mode='None'):
-        self.observation_space = spaces.Discrete(10)
-        self.action_space = spaces.Discrete(5)
-        self.reset()
+        self.observation_space = spaces.Discrete(641)
+        self.action_space = spaces.Discrete(641)
+        
         rclpy.init()
-        self.redball = RedBall()
-
+        self.redball = RedBall(self.observation_space)
+        self.reset()
+        
+        self.step_count = 0
+	
     def reset(self, seed=None, options=None):
-        return self.observation_space.sample(), {}
+        self.step_count = 0
+        observation = self.redball.redball_position
+        if observation is None:
+            observation = self.observation_space.n // 2
+        return observation, {}
 
     def step(self, action):
-	    next_state = self.observation_space.sample()
-	    reward = np.random.randn()
-	    done = False
-	    info = {}
-	    
-	    rclpy.spin_once(self.redball)
-	    return next_state, reward, done, False, info
+        self.redball.step(action)
+        self.step_count += 1
+        
+        rclpy.spin_once(self.redball)
+        
+        while not self.redball.create3_is_stopped:
+            rclpy.spin_once(self.redball)
+        return self.redball.redball_position, self.reward(self.redball.redball_position), self.step_count == 100, False, {'info':None}
+
+    def reward(self, redball_position):
+        if redball_position is None:
+            return 0
+
+        else:
+            center_position = self.observation_space.n // 2
+            distance = abs(redball_position - center_position)
+            if distance == 0:
+                return 1  # Maximum reward if the red ball is in the center
+            else:
+                return 1 / distance  # Inverse proportion of the distance from the center
 	
     def render(self):
         pass
     
     def close(self):
-        redball.destroy_node()
+        self.redball.destroy_node()
         rclpy.shutdown()
         
 class RedBall(Node):
   """
   A Node to analyse red balls in images and publish the results
   """
-  def __init__(self):
+  def __init__(self, observation_space):
     super().__init__('redball')
     self.subscription = self.create_subscription(
       Image,
@@ -50,6 +71,15 @@ class RedBall(Node):
       self.listener_callback,
       10)
     self.subscription # prevent unused variable warning
+    
+    self.stop_subscription = self.create_subscription(
+      StopStatus,
+      '/stop_status',
+      self.stop_callback,
+      10)
+      
+    self.redball_position=-1
+    self.create3_is_stopped=False
 
     # A converter between ROS and OpenCV images
     self.br = CvBridge()
@@ -80,7 +110,21 @@ class RedBall(Node):
         for circle in detected_circles[0, :]:
             circled_orig = cv2.circle(frame, (int(circle[0]), int(circle[1])), int(circle[2]), (0,255,0),thickness=3)
             the_circle = (int(circle[0]), int(circle[1]))
+            self.redball_position = the_circle[0]
         self.target_publisher.publish(self.br.cv2_to_imgmsg(circled_orig))
     else:
         self.get_logger().info('no ball detected')
+        
+  def stop_callback(self, msg):
+      # Callback function to handle stop status messages
+      if msg.is_stopped:
+          self.create3_is_stopped = True
+          
+  def step(self, action):
+      angle = (action - 320) / 320 * np.pi / 2
+      twist_msg = Twist()
+      twist_msg.angular.z = angle
+      # Publish the Twist message to control the robot's movement
+      self.twist_publisher.publish(twist_msg)
+
 
